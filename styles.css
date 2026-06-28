@@ -73,6 +73,7 @@ header h1 {
 }
 
 .board {
+    position: relative;
     display: grid;
     grid-template-columns: 30px repeat(10, 1fr);
     gap: 2px;
@@ -126,8 +127,40 @@ header h1 {
 }
 
 .cell.ship {
-    background: #22c55e;
-    border-color: #16a34a;
+    background: #1e293b;
+    border-color: #334155;
+}
+
+/* Ship graphics overlay */
+.ship-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    z-index: 4;
+}
+
+.ship-sprite {
+    position: absolute;
+}
+
+.ship-sprite svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
+}
+
+.ship-sprite.sunk svg {
+    filter: grayscale(0.5) brightness(0.55) sepia(0.5) hue-rotate(-25deg) saturate(2.5);
+}
+
+.cell.hit,
+.cell.miss {
+    position: relative;
+    z-index: 6;
 }
 
 .cell.hit {
@@ -188,6 +221,11 @@ header h1 {
     width: 20px;
     height: 20px;
     cursor: default;
+}
+
+.legend-ship {
+    font-size: 1.1rem;
+    line-height: 1;
 }
 
 .controls {
