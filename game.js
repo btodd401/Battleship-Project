@@ -24,8 +24,8 @@ let gameState = {
     // AI targeting state
     aiTargetState: {
         huntMode: false,
-        lastHit: null,
-        orientation: null, // 'horizontal' or 'vertical'
+        hits: [], // confirmed hits on the ship currently being hunted
+        orientation: null, // 'horizontal' or 'vertical', once two hits line up
         targetQueue: [] // queue of cells to target in hunt mode
     }
 };
@@ -121,28 +121,26 @@ function aiPlaceShips() {
 // AI Firing Logic with Hunt Mode
 function aiFire() {
     const aiState = gameState.aiTargetState;
-    
-    // If in hunt mode and have targets in queue
-    if (aiState.huntMode && aiState.targetQueue.length > 0) {
-        const target = aiState.targetQueue.shift();
-        const { row, col } = target;
-        
-        // Check if this cell is still valid (not already hit/missed)
-        if (row >= 0 && row < BOARD_SIZE && col >= 0 && col < BOARD_SIZE) {
+
+    // Hunt mode: work through the queue of candidate cells, skipping any that
+    // have already been fired at (the queue is kept fresh, but be defensive).
+    if (aiState.huntMode) {
+        if (aiState.targetQueue.length === 0) {
+            aiState.targetQueue = getHuntTargets(aiState.hits);
+        }
+        while (aiState.targetQueue.length > 0) {
+            const { row, col } = aiState.targetQueue.shift();
             const cell = gameState.playerBoard[row][col];
             if (!cell.isHit && !cell.isMiss) {
                 return { row, col };
             }
         }
-        
-        // If invalid, try next target or fall back to random
-        if (aiState.targetQueue.length === 0) {
-            aiState.huntMode = false;
-            aiState.lastHit = null;
-            aiState.orientation = null;
-        }
+        // Nothing left to try around the known hits - give up the hunt.
+        aiState.huntMode = false;
+        aiState.hits = [];
+        aiState.orientation = null;
     }
-    
+
     // Random firing
     let row, col;
     let validShot = false;
@@ -162,78 +160,106 @@ function aiFire() {
     return { row, col };
 }
 
+// Given the confirmed hits on the ship being hunted, return the cells worth
+// firing at next (only in-bounds cells that haven't been fired at yet).
+function getHuntTargets(hits) {
+    const inBounds = (r, c) => r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE;
+    const isUntried = (r, c) => {
+        const cell = gameState.playerBoard[r][c];
+        return !cell.isHit && !cell.isMiss;
+    };
+    const isValid = (r, c) => inBounds(r, c) && isUntried(r, c);
+
+    if (hits.length === 0) return [];
+
+    // Only one hit so far: try the four cells around it (the user's "4
+    // surrounding areas"), in random order.
+    if (hits.length === 1) {
+        const { row, col } = hits[0];
+        const adjacent = [
+            { row: row - 1, col },
+            { row: row + 1, col },
+            { row, col: col - 1 },
+            { row, col: col + 1 }
+        ].filter(p => isValid(p.row, p.col));
+        adjacent.sort(() => Math.random() - 0.5);
+        return adjacent;
+    }
+
+    // Two or more hits: the orientation is known, so only extend the line at
+    // its two ends. Recomputing from all hits means that if one end misses we
+    // automatically keep firing from the other end until the ship is sunk.
+    const rows = hits.map(h => h.row);
+    const cols = hits.map(h => h.col);
+    const targets = [];
+
+    if (rows.every(r => r === rows[0])) {
+        const row = rows[0];
+        const minCol = Math.min(...cols);
+        const maxCol = Math.max(...cols);
+        if (isValid(row, minCol - 1)) targets.push({ row, col: minCol - 1 });
+        if (isValid(row, maxCol + 1)) targets.push({ row, col: maxCol + 1 });
+    } else if (cols.every(c => c === cols[0])) {
+        const col = cols[0];
+        const minRow = Math.min(...rows);
+        const maxRow = Math.max(...rows);
+        if (isValid(minRow - 1, col)) targets.push({ row: minRow - 1, col });
+        if (isValid(maxRow + 1, col)) targets.push({ row: maxRow + 1, col });
+    }
+
+    // Fallback: hits aren't collinear (e.g. two ships side by side) - probe the
+    // untried neighbours of every known hit.
+    if (targets.length === 0) {
+        for (const { row, col } of hits) {
+            const neighbours = [
+                { row: row - 1, col }, { row: row + 1, col },
+                { row, col: col - 1 }, { row, col: col + 1 }
+            ];
+            for (const p of neighbours) {
+                if (isValid(p.row, p.col) && !targets.some(t => t.row === p.row && t.col === p.col)) {
+                    targets.push(p);
+                }
+            }
+        }
+    }
+
+    return targets;
+}
+
 // Update AI targeting state after a shot
 function updateAITargeting(row, col, wasHit, shipSunk) {
     const aiState = gameState.aiTargetState;
-    
+
     if (shipSunk) {
-        // Ship sunk - return to random firing
+        // Ship sunk - clear the hunt and return to random firing.
         aiState.huntMode = false;
-        aiState.lastHit = null;
+        aiState.hits = [];
         aiState.orientation = null;
         aiState.targetQueue = [];
         return;
     }
-    
+
     if (wasHit) {
-        if (!aiState.huntMode) {
-            // First hit - enter hunt mode, target adjacent cells
-            aiState.huntMode = true;
-            aiState.lastHit = { row, col };
-            aiState.orientation = null;
-            
-            // Add adjacent cells to target queue
-            const adjacent = [
-                { row: row - 1, col }, // up
-                { row: row + 1, col }, // down
-                { row, col: col - 1 }, // left
-                { row, col: col + 1 }  // right
-            ];
-            
-            // Shuffle adjacent cells for randomness
-            adjacent.sort(() => Math.random() - 0.5);
-            aiState.targetQueue = adjacent;
-        } else {
-            // Subsequent hit - determine or continue orientation
-            if (!aiState.orientation) {
-                // Determine orientation based on relationship to last hit
-                if (aiState.lastHit.row === row) {
-                    aiState.orientation = 'horizontal';
-                } else if (aiState.lastHit.col === col) {
-                    aiState.orientation = 'vertical';
-                }
-            }
-            
-            // Always update lastHit to most recent hit
-            aiState.lastHit = { row, col };
-            
-            // Rebuild target queue around current hit position
-            aiState.targetQueue = [];
-            if (aiState.orientation === 'horizontal') {
-                // Add cells to the left and right of current hit
-                aiState.targetQueue.push({ row, col: col - 1 });
-                aiState.targetQueue.push({ row, col: col + 1 });
-            } else if (aiState.orientation === 'vertical') {
-                // Add cells above and below current hit
-                aiState.targetQueue.push({ row: row - 1, col });
-                aiState.targetQueue.push({ row: row + 1, col });
-            } else {
-                // Orientation not yet determined, target all adjacent cells
-                const adjacent = [
-                    { row: row - 1, col }, { row: row + 1, col },
-                    { row, col: col - 1 }, { row, col: col + 1 }
-                ];
-                adjacent.sort(() => Math.random() - 0.5);
-                aiState.targetQueue = adjacent;
-            }
+        // Record the hit and (re)enter hunt mode.
+        aiState.huntMode = true;
+        aiState.hits.push({ row, col });
+
+        // Once we have two hits the ship's orientation is known.
+        if (aiState.hits.length >= 2) {
+            const rows = aiState.hits.map(h => h.row);
+            aiState.orientation = rows.every(r => r === rows[0]) ? 'horizontal' : 'vertical';
         }
-    } else {
-        // Miss - if in hunt mode, continue trying other cells in queue
-        // Queue will handle trying other directions
-        if (aiState.huntMode && aiState.targetQueue.length === 0) {
-            // No more targets in queue, return to random firing
+
+        // Recompute targets from every known hit so we always keep firing along
+        // the ship's line until it's sunk.
+        aiState.targetQueue = getHuntTargets(aiState.hits);
+    } else if (aiState.huntMode) {
+        // Missed while hunting - recompute the remaining candidates around the
+        // known hits (this drops the missed cell and keeps the other end).
+        aiState.targetQueue = getHuntTargets(aiState.hits);
+        if (aiState.targetQueue.length === 0) {
             aiState.huntMode = false;
-            aiState.lastHit = null;
+            aiState.hits = [];
             aiState.orientation = null;
         }
     }
@@ -557,7 +583,7 @@ function initializeGame() {
     // Reset AI targeting state
     gameState.aiTargetState = {
         huntMode: false,
-        lastHit: null,
+        hits: [],
         orientation: null,
         targetQueue: []
     };
