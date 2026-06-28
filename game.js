@@ -1,0 +1,703 @@
+// Game Constants
+const BOARD_SIZE = 10;
+const SHIPS = [
+    { name: 'Carrier', size: 5 },
+    { name: 'Battleship', size: 4 },
+    { name: 'Cruiser', size: 3 },
+    { name: 'Submarine', size: 3 },
+    { name: 'Destroyer', size: 2 }
+];
+
+
+// Game State
+let gameState = {
+    playerBoard: [],
+    enemyBoard: [],
+    playerShips: [],
+    enemyShips: [],
+    currentPhase: 'placement', // placement, playing, gameover
+    currentTurn: 'player', // player, enemy
+    selectedShip: null,
+    shipOrientation: 'horizontal', // horizontal, vertical
+    gameOver: false,
+    winner: null,
+    // AI targeting state
+    aiTargetState: {
+        huntMode: false,
+        lastHit: null,
+        orientation: null, // 'horizontal' or 'vertical'
+        targetQueue: [] // queue of cells to target in hunt mode
+    }
+};
+
+// Initialize boards
+function initializeBoard() {
+    return Array(BOARD_SIZE).fill(null).map(() => 
+        Array(BOARD_SIZE).fill(null).map(() => ({
+            hasShip: false,
+            shipName: null,
+            isHit: false,
+            isMiss: false,
+            isSunk: false
+        }))
+    );
+}
+
+// Convert coordinate (e.g., "A1") to row, col indices
+function coordinateToIndices(coord) {
+    const col = coord.charCodeAt(0) - 65; // A=0, B=1, etc.
+    const row = parseInt(coord.slice(1)) - 1; // 1=0, 2=1, etc.
+    return { row, col };
+}
+
+// Convert row, col indices to coordinate string
+function indicesToCoordinate(row, col) {
+    const colLetter = String.fromCharCode(65 + col);
+    const rowNum = row + 1;
+    return `${colLetter}${rowNum}`;
+}
+
+// Check if ship placement is valid
+function isValidPlacement(board, row, col, size, orientation) {
+    if (orientation === 'horizontal') {
+        if (col + size > BOARD_SIZE) return false;
+        for (let i = 0; i < size; i++) {
+            if (board[row][col + i].hasShip) return false;
+        }
+    } else {
+        if (row + size > BOARD_SIZE) return false;
+        for (let i = 0; i < size; i++) {
+            if (board[row + i][col].hasShip) return false;
+        }
+    }
+    return true;
+}
+
+// Place ship on board
+function placeShip(board, row, col, size, orientation, shipName) {
+    const positions = [];
+    if (orientation === 'horizontal') {
+        for (let i = 0; i < size; i++) {
+            board[row][col + i].hasShip = true;
+            board[row][col + i].shipName = shipName;
+            positions.push({ row: row, col: col + i });
+        }
+    } else {
+        for (let i = 0; i < size; i++) {
+            board[row + i][col].hasShip = true;
+            board[row + i][col].shipName = shipName;
+            positions.push({ row: row + i, col: col });
+        }
+    }
+    return positions;
+}
+
+// AI Ship Placement (Random)
+function aiPlaceShips() {
+    const board = initializeBoard();
+    const ships = [];
+    
+    for (const ship of SHIPS) {
+        let placed = false;
+        let attempts = 0;
+        
+        while (!placed && attempts < 100) {
+            const orientation = Math.random() > 0.5 ? 'horizontal' : 'vertical';
+            const row = Math.floor(Math.random() * BOARD_SIZE);
+            const col = Math.floor(Math.random() * BOARD_SIZE);
+            
+            if (isValidPlacement(board, row, col, ship.size, orientation)) {
+                const positions = placeShip(board, row, col, ship.size, orientation, ship.name);
+                ships.push({ name: ship.name, positions, hits: 0 });
+                placed = true;
+            }
+            attempts++;
+        }
+    }
+    
+    return { board, ships };
+}
+
+// AI Firing Logic with Hunt Mode
+function aiFire() {
+    const aiState = gameState.aiTargetState;
+    
+    // If in hunt mode and have targets in queue
+    if (aiState.huntMode && aiState.targetQueue.length > 0) {
+        const target = aiState.targetQueue.shift();
+        const { row, col } = target;
+        
+        // Check if this cell is still valid (not already hit/missed)
+        if (row >= 0 && row < BOARD_SIZE && col >= 0 && col < BOARD_SIZE) {
+            const cell = gameState.playerBoard[row][col];
+            if (!cell.isHit && !cell.isMiss) {
+                return { row, col };
+            }
+        }
+        
+        // If invalid, try next target or fall back to random
+        if (aiState.targetQueue.length === 0) {
+            aiState.huntMode = false;
+            aiState.lastHit = null;
+            aiState.orientation = null;
+        }
+    }
+    
+    // Random firing
+    let row, col;
+    let validShot = false;
+    let attempts = 0;
+    
+    while (!validShot && attempts < 100) {
+        row = Math.floor(Math.random() * BOARD_SIZE);
+        col = Math.floor(Math.random() * BOARD_SIZE);
+        
+        const cell = gameState.playerBoard[row][col];
+        if (!cell.isHit && !cell.isMiss) {
+            validShot = true;
+        }
+        attempts++;
+    }
+    
+    return { row, col };
+}
+
+// Update AI targeting state after a shot
+function updateAITargeting(row, col, wasHit, shipSunk) {
+    const aiState = gameState.aiTargetState;
+    
+    if (shipSunk) {
+        // Ship sunk - return to random firing
+        aiState.huntMode = false;
+        aiState.lastHit = null;
+        aiState.orientation = null;
+        aiState.targetQueue = [];
+        return;
+    }
+    
+    if (wasHit) {
+        if (!aiState.huntMode) {
+            // First hit - enter hunt mode, target adjacent cells
+            aiState.huntMode = true;
+            aiState.lastHit = { row, col };
+            aiState.orientation = null;
+            
+            // Add adjacent cells to target queue
+            const adjacent = [
+                { row: row - 1, col }, // up
+                { row: row + 1, col }, // down
+                { row, col: col - 1 }, // left
+                { row, col: col + 1 }  // right
+            ];
+            
+            // Shuffle adjacent cells for randomness
+            adjacent.sort(() => Math.random() - 0.5);
+            aiState.targetQueue = adjacent;
+        } else {
+            // Subsequent hit - determine or continue orientation
+            if (!aiState.orientation) {
+                // Determine orientation based on relationship to last hit
+                if (aiState.lastHit.row === row) {
+                    aiState.orientation = 'horizontal';
+                } else if (aiState.lastHit.col === col) {
+                    aiState.orientation = 'vertical';
+                }
+            }
+            
+            // Always update lastHit to most recent hit
+            aiState.lastHit = { row, col };
+            
+            // Rebuild target queue around current hit position
+            aiState.targetQueue = [];
+            if (aiState.orientation === 'horizontal') {
+                // Add cells to the left and right of current hit
+                aiState.targetQueue.push({ row, col: col - 1 });
+                aiState.targetQueue.push({ row, col: col + 1 });
+            } else if (aiState.orientation === 'vertical') {
+                // Add cells above and below current hit
+                aiState.targetQueue.push({ row: row - 1, col });
+                aiState.targetQueue.push({ row: row + 1, col });
+            } else {
+                // Orientation not yet determined, target all adjacent cells
+                const adjacent = [
+                    { row: row - 1, col }, { row: row + 1, col },
+                    { row, col: col - 1 }, { row, col: col + 1 }
+                ];
+                adjacent.sort(() => Math.random() - 0.5);
+                aiState.targetQueue = adjacent;
+            }
+        }
+    } else {
+        // Miss - if in hunt mode, continue trying other cells in queue
+        // Queue will handle trying other directions
+        if (aiState.huntMode && aiState.targetQueue.length === 0) {
+            // No more targets in queue, return to random firing
+            aiState.huntMode = false;
+            aiState.lastHit = null;
+            aiState.orientation = null;
+        }
+    }
+}
+
+// Process a shot
+function processShot(board, ships, row, col, isPlayer) {
+    const cell = board[row][col];
+    let result = { hit: false, sunk: null, gameOver: false };
+    
+    if (cell.hasShip && !cell.isHit) {
+        cell.isHit = true;
+        result.hit = true;
+        
+        // Check if ship is sunk
+        const ship = ships.find(s => 
+            s.positions.some(p => p.row === row && p.col === col)
+        );
+        
+        if (ship) {
+            ship.hits++;
+            if (ship.hits === ship.positions.length) {
+                result.sunk = ship.name;
+                // Mark all cells of sunk ship as sunk
+                ship.positions.forEach(pos => {
+                    board[pos.row][pos.col].isSunk = true;
+                });
+            }
+        }
+        
+        // Check if all ships are sunk
+        const allSunk = ships.every(s => s.hits === s.positions.length);
+        if (allSunk) {
+            result.gameOver = true;
+            gameState.winner = isPlayer ? 'player' : 'enemy';
+        }
+    } else if (!cell.isHit && !cell.isMiss) {
+        cell.isMiss = true;
+    }
+    
+    return result;
+}
+
+// UI Functions
+function renderBoard(boardElement, board, isEnemy = false) {
+    boardElement.innerHTML = '';
+    
+    // Add column labels (1-10) at top
+    const emptyCorner = document.createElement('div');
+    emptyCorner.className = 'label-cell corner';
+    boardElement.appendChild(emptyCorner);
+    
+    for (let col = 0; col < BOARD_SIZE; col++) {
+        const colLabel = document.createElement('div');
+        colLabel.className = 'label-cell column';
+        colLabel.textContent = col + 1;
+        boardElement.appendChild(colLabel);
+    }
+    
+    // Add rows with row labels and cells
+    for (let row = 0; row < BOARD_SIZE; row++) {
+        // Row label (A-J)
+        const rowLabel = document.createElement('div');
+        rowLabel.className = 'label-cell row';
+        rowLabel.textContent = String.fromCharCode(65 + row);
+        boardElement.appendChild(rowLabel);
+        
+        // Cells
+        for (let col = 0; col < BOARD_SIZE; col++) {
+            const cell = document.createElement('div');
+            cell.className = 'cell';
+            cell.dataset.row = row;
+            cell.dataset.col = col;
+            
+            const cellData = board[row][col];
+            
+            if (isEnemy) {
+                // Enemy board: hide ships, show hits/misses
+                if (cellData.isHit) {
+                    cell.classList.add('hit');
+                    if (cellData.isSunk) {
+                        cell.classList.add('sunk');
+                    }
+                } else if (cellData.isMiss) {
+                    cell.classList.add('miss');
+                }
+            } else {
+                // Player board: show ships, hits, misses
+                if (cellData.hasShip) {
+                    cell.classList.add('ship');
+                }
+                if (cellData.isHit) {
+                    cell.classList.add('hit');
+                    if (cellData.isSunk) {
+                        cell.classList.add('sunk');
+                    }
+                } else if (cellData.isMiss) {
+                    cell.classList.add('miss');
+                }
+            }
+            
+            boardElement.appendChild(cell);
+        }
+    }
+}
+
+function renderShipsToPlace() {
+    const container = document.getElementById('shipsToPlace');
+    container.innerHTML = '';
+    
+    SHIPS.forEach((ship, index) => {
+        const shipItem = document.createElement('div');
+        shipItem.className = 'ship-item';
+        shipItem.textContent = `${ship.name} (${ship.size})`;
+        shipItem.dataset.index = index;
+        
+        if (gameState.playerShips.some(s => s.name === ship.name)) {
+            shipItem.classList.add('placed');
+        }
+        
+        if (gameState.selectedShip === index) {
+            shipItem.classList.add('selected');
+        }
+        
+        shipItem.addEventListener('click', () => selectShip(index));
+        container.appendChild(shipItem);
+    });
+}
+
+function selectShip(index) {
+    // Prevent selecting a ship that's already placed
+    const ship = SHIPS[index];
+    if (gameState.playerShips.some(s => s.name === ship.name)) {
+        updateStatus(`${ship.name} is already placed! Select a different ship.`);
+        return;
+    }
+    
+    gameState.selectedShip = index;
+    renderShipsToPlace();
+    clearPreview();
+}function clearPreview() {
+    const boardElement = document.getElementById('playerBoard');
+    const cells = boardElement.querySelectorAll('.cell');
+    cells.forEach(cell => {
+        cell.classList.remove('preview', 'invalid');
+    });
+}
+function showPreview(row, col) {
+    if (gameState.selectedShip === null) return;
+    
+    const ship = SHIPS[gameState.selectedShip];
+    const boardElement = document.getElementById('playerBoard');
+    const cells = boardElement.querySelectorAll('.cell');
+    
+    const isValid = isValidPlacement(
+        gameState.playerBoard, 
+        row, col, 
+        ship.size, 
+        gameState.shipOrientation
+    );
+    
+    // Grid: querySelectorAll('.cell') returns only the 100 game cells, not labels
+    // Simple 10x10 grid indexing: row * 10 + col
+    if (gameState.shipOrientation === 'horizontal') {
+        for (let i = 0; i < ship.size; i++) {
+            if (col + i < BOARD_SIZE) {
+                const cellIndex = row * 10 + (col + i);
+                if (cells[cellIndex]) {
+                    cells[cellIndex].classList.add(isValid ? 'preview' : 'invalid');
+                }
+            }
+        }
+    } else {
+        for (let i = 0; i < ship.size; i++) {
+            if (row + i < BOARD_SIZE) {
+                const cellIndex = (row + i) * 10 + col;
+                if (cells[cellIndex]) {
+                    cells[cellIndex].classList.add(isValid ? 'preview' : 'invalid');
+                }
+            }
+        }
+    }
+}
+
+function updateStatus(message) {
+    document.getElementById('gameStatus').textContent = message;
+}
+
+function updateTurnIndicator() {
+    const indicator = document.getElementById('turnIndicator');
+    if (gameState.currentTurn === 'player') {
+        indicator.textContent = "Your Turn";
+        indicator.style.color = '#22c55e';
+    } else {
+        indicator.textContent = "AI Turn";
+        indicator.style.color = '#ef4444';
+    }
+}
+
+// Game Flow Functions
+function initializeGame() {
+    gameState.playerBoard = initializeBoard();
+    gameState.enemyBoard = initializeBoard();
+    gameState.playerShips = [];
+    gameState.enemyShips = [];
+    gameState.currentPhase = 'placement';
+    gameState.currentTurn = 'player';
+    gameState.selectedShip = null;
+    gameState.shipOrientation = 'horizontal';
+    gameState.gameOver = false;
+    gameState.winner = null;
+    
+    // Reset AI targeting state
+    gameState.aiTargetState = {
+        huntMode: false,
+        lastHit: null,
+        orientation: null,
+        targetQueue: []
+    };
+    
+    renderBoard(document.getElementById('playerBoard'), gameState.playerBoard);
+    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, true);
+    renderShipsToPlace();
+    
+    document.getElementById('shipPlacement').classList.remove('hidden');
+    document.getElementById('startGame').disabled = true;
+    
+    updateStatus("Place your ships to begin!");
+}
+
+function startGame() {
+    // If game is over, fully reset to placement phase
+    if (gameState.gameOver) {
+        initializeGame();
+        return;
+    }
+    
+    // Normal game start (from placement phase)
+    const aiData = aiPlaceShips();
+    gameState.enemyBoard = aiData.board;
+    gameState.enemyShips = aiData.ships;
+    
+    gameState.currentPhase = 'playing';
+    gameState.currentTurn = 'player';
+    
+    document.getElementById('shipPlacement').classList.add('hidden');
+    document.getElementById('startGame').disabled = true;
+    
+    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, true);
+    updateStatus("Game started! Fire at the enemy board!");
+    updateTurnIndicator();
+}
+
+function handlePlayerShot(row, col) {
+    if (gameState.currentPhase !== 'playing' || gameState.currentTurn !== 'player') {
+        return;
+    }
+    
+    const result = processShot(gameState.enemyBoard, gameState.enemyShips, row, col, true);
+    
+    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, true);
+    
+    if (result.hit) {
+        updateStatus(`Hit at ${indicesToCoordinate(row, col)}!${result.sunk ? ` ${result.sunk} sunk!` : ''}`);
+        
+        if (result.gameOver) {
+            endGame('player');
+            return;
+        }
+    } else {
+        updateStatus(`Miss at ${indicesToCoordinate(row, col)}`);
+    }
+    
+    // AI's turn
+    gameState.currentTurn = 'enemy';
+    updateTurnIndicator();
+    
+    setTimeout(aiTurn, 1000);
+}
+
+function aiTurn() {
+    if (gameState.gameOver) return;
+    
+    const { row, col } = aiFire();
+    const result = processShot(gameState.playerBoard, gameState.playerShips, row, col, false);
+    
+    // Update AI targeting state based on shot result
+    updateAITargeting(row, col, result.hit, result.sunk !== null);
+    
+    renderBoard(document.getElementById('playerBoard'), gameState.playerBoard);
+    
+    if (result.hit) {
+        updateStatus(`AI hit your ${indicesToCoordinate(row, col)}!${result.sunk ? ` Your ${result.sunk} was sunk!` : ''}`);
+        
+        if (result.gameOver) {
+            endGame('enemy');
+            return;
+        }
+    } else {
+        updateStatus(`AI missed at ${indicesToCoordinate(row, col)}`);
+    }
+    
+    gameState.currentTurn = 'player';
+    updateTurnIndicator();
+}
+
+function endGame(winner) {
+    gameState.gameOver = true;
+    gameState.winner = winner;
+    
+    if (winner === 'player') {
+        updateStatus("🎉 Congratulations! You sunk all enemy ships!");
+    } else {
+        updateStatus("💀 Game Over! AI sunk all your ships!");
+    }
+    
+    document.getElementById('startGame').disabled = false;
+}
+
+// Event Listeners
+document.addEventListener('DOMContentLoaded', () => {
+    initializeGame();
+    
+    // Player board click (ship placement)
+    document.getElementById('playerBoard').addEventListener('click', (e) => {
+        if (gameState.currentPhase !== 'placement') return;
+        
+        const cell = e.target.closest('.cell');
+        if (!cell) return;
+        
+        const row = parseInt(cell.dataset.row);
+        const col = parseInt(cell.dataset.col);
+        
+        if (gameState.selectedShip === null) {
+            updateStatus("Select a ship to place first!");
+            return;
+        }
+        
+        const ship = SHIPS[gameState.selectedShip];
+        
+        if (isValidPlacement(gameState.playerBoard, row, col, ship.size, gameState.shipOrientation)) {
+            const positions = placeShip(
+                gameState.playerBoard, 
+                row, col, 
+                ship.size, 
+                gameState.shipOrientation, 
+                ship.name
+            );
+            
+            gameState.playerShips.push({ 
+                name: ship.name, 
+                positions, 
+                hits: 0 
+            });
+            
+            renderBoard(document.getElementById('playerBoard'), gameState.playerBoard);
+            renderShipsToPlace();
+            
+            gameState.selectedShip = null;
+            
+            if (gameState.playerShips.length === SHIPS.length) {
+                document.getElementById('startGame').disabled = false;
+                updateStatus("All ships placed! Click Start Game to begin.");
+            } else {
+                updateStatus("Place your next ship!");
+            }
+        } else {
+            updateStatus("Invalid placement! Try a different position.");
+        }
+    });
+    
+    // Player board hover (preview)
+    document.getElementById('playerBoard').addEventListener('mouseover', (e) => {
+        if (gameState.currentPhase !== 'placement') return;
+        
+        const cell = e.target.closest('.cell');
+        if (!cell) return;
+        
+        const row = parseInt(cell.dataset.row);
+        const col = parseInt(cell.dataset.col);
+        
+        clearPreview();
+        showPreview(row, col);
+    });
+    
+    document.getElementById('playerBoard').addEventListener('mouseout', clearPreview);
+    
+    // Enemy board click (firing)
+    document.getElementById('enemyBoard').addEventListener('click', (e) => {
+        const cell = e.target.closest('.cell');
+        if (!cell) return;
+        
+        const row = parseInt(cell.dataset.row);
+        const col = parseInt(cell.dataset.col);
+        
+        handlePlayerShot(row, col);
+    });
+    
+    // Rotate ship
+    document.getElementById('rotateShip').addEventListener('click', () => {
+        gameState.shipOrientation = gameState.shipOrientation === 'horizontal' ? 'vertical' : 'horizontal';
+        updateStatus(`Orientation: ${gameState.shipOrientation}`);
+    });
+    
+    // Random placement
+    document.getElementById('randomPlacement').addEventListener('click', () => {
+        // Clear existing ships
+        gameState.playerBoard = initializeBoard();
+        gameState.playerShips = [];
+        
+        // Place all ships randomly
+        for (const ship of SHIPS) {
+            let placed = false;
+            let attempts = 0;
+            
+            while (!placed && attempts < 100) {
+                const orientation = Math.random() > 0.5 ? 'horizontal' : 'vertical';
+                const row = Math.floor(Math.random() * BOARD_SIZE);
+                const col = Math.floor(Math.random() * BOARD_SIZE);
+                
+                if (isValidPlacement(gameState.playerBoard, row, col, ship.size, orientation)) {
+                    const positions = placeShip(
+                        gameState.playerBoard, 
+                        row, col, 
+                        ship.size, 
+                        orientation, 
+                        ship.name
+                    );
+                    
+                    gameState.playerShips.push({ 
+                        name: ship.name, 
+                        positions, 
+                        hits: 0 
+                    });
+                    placed = true;
+                }
+                attempts++;
+            }
+        }
+        
+        renderBoard(document.getElementById('playerBoard'), gameState.playerBoard);
+        renderShipsToPlace();
+        
+        document.getElementById('startGame').disabled = false;
+        updateStatus("Ships placed randomly! Click Start Game to begin.");
+    });
+    
+    // Start game
+    document.getElementById('startGame').addEventListener('click', () => {
+        startGame();
+    });
+    
+    // Reset game
+    document.getElementById('resetGame').addEventListener('click', () => {
+        initializeGame();
+    });
+    
+    // Keyboard shortcut for rotate
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'r' || e.key === 'R') {
+            if (gameState.currentPhase === 'placement') {
+                gameState.shipOrientation = gameState.shipOrientation === 'horizontal' ? 'vertical' : 'horizontal';
+                updateStatus(`Orientation: ${gameState.shipOrientation}`);
+            }
+        }
+    });
+});
