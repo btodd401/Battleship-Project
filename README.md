@@ -5,7 +5,8 @@ A simple web-based Battleship game where a human player competes against an AI o
 ## Features
 
 - **10x10 Game Board**: Classic Battleship grid (A1-J10)
-- **4 Ship Types**: Carrier (5), Battleship (4), Cruiser (3), Destroyer (2)
+- **5 Ship Types**: Carrier (5), Battleship (4), Cruiser (3), Submarine (3), Destroyer (2)
+- **Ship Graphics**: Scalable SVG ship silhouettes that span their cells in both orientations (replaces the old plain blocks)
 - **Ship Placement**: Manual placement with rotation or random auto-placement
 - **AI Opponent**: AI places ships randomly and fires at player's board
 - **Turn-Based Gameplay**: Player and AI alternate turns

@@ -278,7 +278,7 @@ function processShot(board, ships, row, col, isPlayer) {
 }
 
 // UI Functions
-function renderBoard(boardElement, board, isEnemy = false) {
+function renderBoard(boardElement, board, ships = [], isEnemy = false) {
     boardElement.innerHTML = '';
     
     // Add column labels (1-10) at top
@@ -338,6 +338,114 @@ function renderBoard(boardElement, board, isEnemy = false) {
             boardElement.appendChild(cell);
         }
     }
+
+    renderShipOverlays(boardElement, ships, isEnemy);
+}
+
+// Build an inline SVG silhouette for a given ship, sized to span its cells.
+// Coordinates are expressed along the ship's long axis (in cells, 0..size) and
+// its cross axis (0..1), then projected to x/y based on orientation so the same
+// shape works for both horizontal and vertical placement.
+function buildShipSVG(name, size, orientation) {
+    const U = 10;
+    const L = size * U;
+    const horiz = orientation === 'horizontal';
+    const viewBox = horiz ? `0 0 ${L} ${U}` : `0 0 ${U} ${L}`;
+
+    const P = (a, c) => horiz
+        ? `${(a * U).toFixed(2)},${(c * U).toFixed(2)}`
+        : `${(c * U).toFixed(2)},${(a * U).toFixed(2)}`;
+    const stroke = 'stroke="#10151f" stroke-width="1" vector-effect="non-scaling-stroke" stroke-linejoin="round"';
+    const poly = (pts, fill, extra = stroke) =>
+        `<polygon points="${pts.map(p => P(p[0], p[1])).join(' ')}" fill="${fill}" ${extra}/>`;
+    const rect = (a0, a1, c0, c1, fill, extra = stroke) =>
+        poly([[a0, c0], [a1, c0], [a1, c1], [a0, c1]], fill, extra);
+    const circ = (a, c, r, fill) => {
+        const cx = horiz ? a * U : c * U;
+        const cy = horiz ? c * U : a * U;
+        return `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${(r * U).toFixed(2)}" fill="${fill}" ${stroke}/>`;
+    };
+
+    // Hull: flat stern at a=0, pointed bow at a=size.
+    const hull = [
+        [0.05, 0.24], [size - 0.55, 0.18], [size - 0.04, 0.5],
+        [size - 0.55, 0.82], [0.05, 0.76]
+    ];
+
+    let shapes = '';
+    if (name === 'Carrier') {
+        shapes += poly(hull, '#475569');
+        shapes += rect(0.2, size - 0.35, 0.3, 0.44, '#334155'); // flight deck
+        for (let a = 0.6; a < size - 0.5; a += 0.85) {
+            shapes += rect(a, a + 0.38, 0.36, 0.385, '#cbd5e1', ''); // runway dashes
+        }
+        shapes += rect(size - 1.15, size - 0.75, 0.1, 0.32, '#64748b'); // island
+        shapes += rect(size - 1.0, size - 0.9, -0.02, 0.1, '#94a3b8', ''); // mast
+    } else if (name === 'Submarine') {
+        const body = [
+            [0.28, 0.34], [size - 0.28, 0.34], [size - 0.04, 0.5],
+            [size - 0.28, 0.66], [0.28, 0.66], [0.04, 0.5]
+        ];
+        shapes += poly(body, '#3f4753');
+        shapes += rect(size * 0.42, size * 0.6, 0.14, 0.34, '#566072'); // conning tower
+        shapes += rect(size * 0.49, size * 0.53, 0.0, 0.14, '#94a3b8', ''); // periscope
+    } else {
+        shapes += poly(hull, '#5b6573');
+        shapes += rect(size * 0.4, size * 0.66, 0.1, 0.42, '#818c9e'); // superstructure
+        shapes += rect(size * 0.5, size * 0.57, -0.02, 0.1, '#aab3c2', ''); // mast
+        const turrets = Math.max(1, size - 2);
+        const span = size - 1.2;
+        for (let i = 0; i < turrets; i++) {
+            const a = turrets === 1 ? size / 2 : 0.6 + (span * i) / (turrets - 1);
+            shapes += circ(a, 0.5, 0.13, '#2f3744');
+        }
+    }
+
+    return `<svg viewBox="${viewBox}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">${shapes}</svg>`;
+}
+
+// Draw ship silhouettes on top of a board, aligned to the rendered cells.
+// Enemy ships are only revealed once sunk (or when the game is over).
+function renderShipOverlays(boardElement, ships, isEnemy) {
+    const existing = boardElement.querySelector('.ship-overlay');
+    if (existing) existing.remove();
+    if (!ships || ships.length === 0) return;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'ship-overlay';
+    boardElement.appendChild(overlay);
+    const overlayRect = overlay.getBoundingClientRect();
+
+    ships.forEach(ship => {
+        const sunk = ship.hits >= ship.positions.length;
+        if (isEnemy && !sunk && !gameState.gameOver) return;
+
+        const rows = ship.positions.map(p => p.row);
+        const cols = ship.positions.map(p => p.col);
+        const minRow = Math.min(...rows), maxRow = Math.max(...rows);
+        const minCol = Math.min(...cols), maxCol = Math.max(...cols);
+        const orientation = minRow === maxRow ? 'horizontal' : 'vertical';
+
+        const firstCell = boardElement.querySelector(`.cell[data-row="${minRow}"][data-col="${minCol}"]`);
+        const lastCell = boardElement.querySelector(`.cell[data-row="${maxRow}"][data-col="${maxCol}"]`);
+        if (!firstCell || !lastCell) return;
+
+        const r1 = firstCell.getBoundingClientRect();
+        const r2 = lastCell.getBoundingClientRect();
+        const left = Math.min(r1.left, r2.left) - overlayRect.left;
+        const top = Math.min(r1.top, r2.top) - overlayRect.top;
+        const width = Math.max(r1.right, r2.right) - Math.min(r1.left, r2.left);
+        const height = Math.max(r1.bottom, r2.bottom) - Math.min(r1.top, r2.top);
+
+        const sprite = document.createElement('div');
+        sprite.className = 'ship-sprite' + (sunk ? ' sunk' : '');
+        sprite.style.left = `${left}px`;
+        sprite.style.top = `${top}px`;
+        sprite.style.width = `${width}px`;
+        sprite.style.height = `${height}px`;
+        sprite.innerHTML = buildShipSVG(ship.name, ship.positions.length, orientation);
+        overlay.appendChild(sprite);
+    });
 }
 
 function renderShipsToPlace() {
@@ -454,8 +562,8 @@ function initializeGame() {
         targetQueue: []
     };
     
-    renderBoard(document.getElementById('playerBoard'), gameState.playerBoard);
-    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, true);
+    renderBoard(document.getElementById('playerBoard'), gameState.playerBoard, gameState.playerShips, false);
+    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, gameState.enemyShips, true);
     renderShipsToPlace();
     
     document.getElementById('shipPlacement').classList.remove('hidden');
@@ -482,7 +590,7 @@ function startGame() {
     document.getElementById('shipPlacement').classList.add('hidden');
     document.getElementById('startGame').disabled = true;
     
-    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, true);
+    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, gameState.enemyShips, true);
     updateStatus("Game started! Fire at the enemy board!");
     updateTurnIndicator();
 }
@@ -494,7 +602,7 @@ function handlePlayerShot(row, col) {
     
     const result = processShot(gameState.enemyBoard, gameState.enemyShips, row, col, true);
     
-    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, true);
+    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, gameState.enemyShips, true);
     
     if (result.hit) {
         updateStatus(`Hit at ${indicesToCoordinate(row, col)}!${result.sunk ? ` ${result.sunk} sunk!` : ''}`);
@@ -523,7 +631,7 @@ function aiTurn() {
     // Update AI targeting state based on shot result
     updateAITargeting(row, col, result.hit, result.sunk !== null);
     
-    renderBoard(document.getElementById('playerBoard'), gameState.playerBoard);
+    renderBoard(document.getElementById('playerBoard'), gameState.playerBoard, gameState.playerShips, false);
     
     if (result.hit) {
         updateStatus(`AI hit your ${indicesToCoordinate(row, col)}!${result.sunk ? ` Your ${result.sunk} was sunk!` : ''}`);
@@ -549,7 +657,10 @@ function endGame(winner) {
     } else {
         updateStatus("💀 Game Over! AI sunk all your ships!");
     }
-    
+
+    // Reveal the enemy fleet now that the game is over.
+    renderBoard(document.getElementById('enemyBoard'), gameState.enemyBoard, gameState.enemyShips, true);
+
     document.getElementById('startGame').disabled = false;
 }
 
@@ -589,7 +700,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 hits: 0 
             });
             
-            renderBoard(document.getElementById('playerBoard'), gameState.playerBoard);
+            renderBoard(document.getElementById('playerBoard'), gameState.playerBoard, gameState.playerShips, false);
             renderShipsToPlace();
             
             gameState.selectedShip = null;
@@ -674,7 +785,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         
-        renderBoard(document.getElementById('playerBoard'), gameState.playerBoard);
+        renderBoard(document.getElementById('playerBoard'), gameState.playerBoard, gameState.playerShips, false);
         renderShipsToPlace();
         
         document.getElementById('startGame').disabled = false;
@@ -699,5 +810,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateStatus(`Orientation: ${gameState.shipOrientation}`);
             }
         }
+    });
+
+    // Ship overlays are positioned in pixels, so realign them when the layout changes.
+    window.addEventListener('resize', () => {
+        renderShipOverlays(document.getElementById('playerBoard'), gameState.playerShips, false);
+        renderShipOverlays(document.getElementById('enemyBoard'), gameState.enemyShips, true);
     });
 });
