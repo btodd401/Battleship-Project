@@ -129,6 +129,11 @@ header h1 {
 .cell.ship {
     background: #1e293b;
     border-color: #334155;
+    cursor: grab;
+}
+
+.cell.ship:active {
+    cursor: grabbing;
 }
 
 /* Ship graphics overlay */
