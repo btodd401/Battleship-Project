@@ -21,6 +21,9 @@ let gameState = {
     shipOrientation: 'horizontal', // horizontal, vertical
     gameOver: false,
     winner: null,
+    dragging: null, // ship being dragged to a new position during placement
+    dragHover: null, // last hovered cell during a drag
+    suppressNextClick: false, // skip the click event that fires right after a drag
     // AI targeting state
     aiTargetState: {
         huntMode: false,
@@ -552,6 +555,103 @@ function showPreview(row, col) {
     }
 }
 
+// --- Ship drag-to-move helpers (placement phase) ---
+function getShipOrientation(ship) {
+    if (ship.positions.length < 2) return 'horizontal';
+    return ship.positions[0].row === ship.positions[1].row ? 'horizontal' : 'vertical';
+}
+
+// Convert the cell under the cursor into the ship's top-left origin, preserving
+// the grab offset and clamping so the whole ship stays on the board.
+function dragOrigin(hoverRow, hoverCol) {
+    const size = gameState.dragging.size;
+    const offset = gameState.dragging.offset;
+    let row = hoverRow;
+    let col = hoverCol;
+    if (gameState.shipOrientation === 'horizontal') {
+        col = Math.max(0, Math.min(hoverCol - offset, BOARD_SIZE - size));
+        row = Math.max(0, Math.min(hoverRow, BOARD_SIZE - 1));
+    } else {
+        row = Math.max(0, Math.min(hoverRow - offset, BOARD_SIZE - size));
+        col = Math.max(0, Math.min(hoverCol, BOARD_SIZE - 1));
+    }
+    return { row, col };
+}
+
+// Remove a placed ship from the board and enter the dragging state.
+function liftShipForDrag(shipName, grabRow, grabCol) {
+    const ship = gameState.playerShips.find(s => s.name === shipName);
+    if (!ship) return;
+    const orientation = getShipOrientation(ship);
+    const sorted = [...ship.positions].sort((a, b) => (a.row - b.row) || (a.col - b.col));
+    let offset = sorted.findIndex(p => p.row === grabRow && p.col === grabCol);
+    if (offset < 0) offset = 0;
+
+    ship.positions.forEach(p => {
+        const c = gameState.playerBoard[p.row][p.col];
+        c.hasShip = false;
+        c.shipName = null;
+    });
+    gameState.playerShips = gameState.playerShips.filter(s => s.name !== shipName);
+
+    gameState.selectedShip = SHIPS.findIndex(s => s.name === shipName);
+    gameState.shipOrientation = orientation;
+    gameState.dragging = {
+        shipName,
+        size: ship.positions.length,
+        offset,
+        original: { positions: ship.positions, orientation }
+    };
+    gameState.dragHover = { row: grabRow, col: grabCol };
+    document.getElementById('startGame').disabled = true;
+}
+
+// Drop the dragged ship at the hovered cell, or snap it back if invalid.
+function dropDraggedShip() {
+    const drag = gameState.dragging;
+    if (!drag) return;
+    const hover = gameState.dragHover || { row: 0, col: 0 };
+    const o = dragOrigin(hover.row, hover.col);
+    const valid = isValidPlacement(gameState.playerBoard, o.row, o.col, drag.size, gameState.shipOrientation);
+
+    if (valid) {
+        const positions = placeShip(gameState.playerBoard, o.row, o.col, drag.size, gameState.shipOrientation, drag.shipName);
+        gameState.playerShips.push({ name: drag.shipName, positions, hits: 0 });
+    } else {
+        const orig = drag.original;
+        orig.positions.forEach(p => {
+            const c = gameState.playerBoard[p.row][p.col];
+            c.hasShip = true;
+            c.shipName = drag.shipName;
+        });
+        gameState.playerShips.push({ name: drag.shipName, positions: orig.positions, hits: 0 });
+        gameState.shipOrientation = orig.orientation;
+    }
+
+    gameState.dragging = null;
+    gameState.dragHover = null;
+    gameState.selectedShip = null;
+    gameState.suppressNextClick = true;
+
+    clearPreview();
+    renderBoard(document.getElementById('playerBoard'), gameState.playerBoard, gameState.playerShips, false);
+    renderShipsToPlace();
+
+    if (gameState.playerShips.length === SHIPS.length) {
+        document.getElementById('startGame').disabled = false;
+        updateStatus(valid ? "All ships placed! Click Start Game to begin." : "Couldn't move there \u2014 ship returned to its spot.");
+    } else {
+        updateStatus("Place your next ship!");
+    }
+}
+
+function refreshDragPreview() {
+    if (!gameState.dragging || !gameState.dragHover) return;
+    const o = dragOrigin(gameState.dragHover.row, gameState.dragHover.col);
+    clearPreview();
+    showPreview(o.row, o.col);
+}
+
 function updateStatus(message) {
     document.getElementById('gameStatus').textContent = message;
 }
@@ -579,6 +679,9 @@ function initializeGame() {
     gameState.shipOrientation = 'horizontal';
     gameState.gameOver = false;
     gameState.winner = null;
+    gameState.dragging = null;
+    gameState.dragHover = null;
+    gameState.suppressNextClick = false;
     
     // Reset AI targeting state
     gameState.aiTargetState = {
@@ -697,6 +800,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Player board click (ship placement)
     document.getElementById('playerBoard').addEventListener('click', (e) => {
         if (gameState.currentPhase !== 'placement') return;
+        if (gameState.suppressNextClick) {
+            gameState.suppressNextClick = false;
+            return;
+        }
         
         const cell = e.target.closest('.cell');
         if (!cell) return;
@@ -752,11 +859,46 @@ document.addEventListener('DOMContentLoaded', () => {
         const row = parseInt(cell.dataset.row);
         const col = parseInt(cell.dataset.col);
         
+        if (gameState.dragging) {
+            gameState.dragHover = { row, col };
+            refreshDragPreview();
+            return;
+        }
+        
         clearPreview();
         showPreview(row, col);
     });
     
-    document.getElementById('playerBoard').addEventListener('mouseout', clearPreview);
+    document.getElementById('playerBoard').addEventListener('mouseout', () => {
+        if (gameState.dragging) return;
+        clearPreview();
+    });
+    
+    // Pick up an already-placed ship to drag it elsewhere (placement phase)
+    document.getElementById('playerBoard').addEventListener('mousedown', (e) => {
+        if (gameState.currentPhase !== 'placement') return;
+        if (gameState.dragging) return;
+        
+        const cell = e.target.closest('.cell');
+        if (!cell) return;
+        
+        const row = parseInt(cell.dataset.row);
+        const col = parseInt(cell.dataset.col);
+        const boardCell = gameState.playerBoard[row][col];
+        if (!boardCell.hasShip) return;
+        
+        e.preventDefault();
+        liftShipForDrag(boardCell.shipName, row, col);
+        renderBoard(document.getElementById('playerBoard'), gameState.playerBoard, gameState.playerShips, false);
+        renderShipsToPlace();
+        refreshDragPreview();
+        updateStatus(`Moving ${gameState.dragging.shipName} \u2014 release to drop, press R to rotate.`);
+    });
+    
+    // Release anywhere to drop the dragged ship
+    document.addEventListener('mouseup', () => {
+        if (gameState.dragging) dropDraggedShip();
+    });
     
     // Enemy board click (firing)
     document.getElementById('enemyBoard').addEventListener('click', (e) => {
@@ -772,7 +914,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Rotate ship
     document.getElementById('rotateShip').addEventListener('click', () => {
         gameState.shipOrientation = gameState.shipOrientation === 'horizontal' ? 'vertical' : 'horizontal';
-        updateStatus(`Orientation: ${gameState.shipOrientation}`);
+        if (gameState.dragging) {
+            refreshDragPreview();
+            updateStatus(`Moving ${gameState.dragging.shipName} \u2014 ${gameState.shipOrientation}. Release to drop.`);
+        } else {
+            updateStatus(`Orientation: ${gameState.shipOrientation}`);
+        }
     });
     
     // Random placement
@@ -833,7 +980,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.key === 'r' || e.key === 'R') {
             if (gameState.currentPhase === 'placement') {
                 gameState.shipOrientation = gameState.shipOrientation === 'horizontal' ? 'vertical' : 'horizontal';
-                updateStatus(`Orientation: ${gameState.shipOrientation}`);
+                if (gameState.dragging) {
+                    refreshDragPreview();
+                    updateStatus(`Moving ${gameState.dragging.shipName} \u2014 ${gameState.shipOrientation}. Release to drop.`);
+                } else {
+                    updateStatus(`Orientation: ${gameState.shipOrientation}`);
+                }
             }
         }
     });
