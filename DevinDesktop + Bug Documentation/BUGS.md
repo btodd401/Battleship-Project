@@ -1,8 +1,8 @@
 # Bug Log — Battleship (Human vs AI)
 
 A record of the bugs found during development and how each was fixed. The original
-build happened in Windsurf/Cascade (see `docs/cascade-history.md` for the full
-conversation); the ship-graphics work was done afterward (see `docs/test-report.md`).
+build happened in Windsurf/Cascade (see `DevinDesktop + Bug Documentation/cascade-history.md` for the full
+conversation); the ship-graphics work was done afterward (see `DevinDesktop + Bug Documentation/test-report.md`).
 
 Each entry: **symptom → root cause → fix.**
 
@@ -47,7 +47,7 @@ Each entry: **symptom → root cause → fix.**
 
 ## 8. Ships were plain green blocks (enhancement)
 - **Request:** Replace the flat green blocks with actual ship graphics.
-- **Change:** Added SVG ship silhouettes drawn on an overlay above the board (Carrier with a flight deck, cruisers/battleship with turrets, submarine with a conning tower), oriented for horizontal/vertical placement; hit markers stay on top; enemy ships stay hidden until sunk/game over. Details and screenshots in `docs/test-report.md`.
+- **Change:** Added SVG ship silhouettes drawn on an overlay above the board (Carrier with a flight deck, cruisers/battleship with turrets, submarine with a conning tower), oriented for horizontal/vertical placement; hit markers stay on top; enemy ships stay hidden until sunk/game over. Details and screenshots in `DevinDesktop + Bug Documentation/test-report.md`.
 
 ---
 
